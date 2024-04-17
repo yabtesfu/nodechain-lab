@@ -1,0 +1,23 @@
+{
+  "name": "nodechain-lab",
+  "version": "0.1.0",
+  "description": "An educational but feature-rich blockchain lab built with Node.js.",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "demo": "node examples/demo.js",
+    "test": "node --test"
+  },
+  "keywords": [
+    "blockchain",
+    "proof-of-work",
+    "nodejs",
+    "cryptography"
+  ],
+  "author": "yabtesfu",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.19.2"
+  }
+}
+

@@ -1,0 +1,7 @@
+node_modules/
+coverage/
+.env
+data/*.json
+history.txt
+npm-debug.log*
+
