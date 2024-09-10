@@ -18,12 +18,23 @@ function createBlockchain() {
   return new Blockchain();
 }
 
-function createApp(blockchain = createBlockchain()) {
+function createApp(blockchain = createBlockchain(), { p2p = null } = {}) {
   const app = express();
   app.use(express.json({ limit: '1mb' }));
 
   app.get('/health', (req, res) => {
-    res.json({ status: 'ok', height: blockchain.chain.length - 1 });
+    res.json({
+      status: 'ok',
+      height: blockchain.chain.length - 1,
+      peers: p2p ? p2p.peerCount() : 0
+    });
+  });
+
+  app.get('/peers', (req, res) => {
+    res.json({
+      count: p2p ? p2p.peerCount() : 0,
+      dialed: p2p ? Array.from(p2p.outbound.keys()) : []
+    });
   });
 
   app.get('/chain', (req, res) => {
@@ -73,6 +84,9 @@ function createApp(blockchain = createBlockchain()) {
       }
 
       const accepted = blockchain.addTransaction(transaction);
+      if (p2p) {
+        p2p.broadcastTransaction(accepted); // shout it to the tribe
+      }
       res.status(201).json({
         message: `Transaction queued for block ${blockchain.chain.length}`,
         transaction: accepted.toJSON()
@@ -87,6 +101,9 @@ function createApp(blockchain = createBlockchain()) {
       const minerAddress = req.body?.minerAddress || req.query.miner;
       const block = blockchain.minePendingTransactions(minerAddress);
       saveSnapshot(DEFAULT_DATA_FILE, blockchain);
+      if (p2p) {
+        p2p.broadcastBlock(block); // shout the fresh block to the tribe
+      }
       res.status(201).json({
         message: 'New block mined',
         block: block.toJSON()
@@ -156,10 +173,10 @@ function startNode({
   peers = [],
   blockchain = createBlockchain()
 } = {}) {
-  const app = createApp(blockchain);
-  const server = http.createServer(app);
   const selfUrl = `http://localhost:${port}`;
   const p2p = new P2PNode(blockchain, { selfUrl });
+  const app = createApp(blockchain, { p2p });
+  const server = http.createServer(app);
   p2p.attach(server);
 
   server.listen(port, () => {
