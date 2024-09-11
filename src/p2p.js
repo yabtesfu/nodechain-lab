@@ -10,23 +10,36 @@ const MSG = {
   QUERY_ALL: 'QUERY_ALL', // "beat me your whole chain"
   CHAIN: 'CHAIN', // "here is my whole chain"
   NEW_BLOCK: 'NEW_BLOCK', // "I just learned of this block"
-  NEW_TRANSACTION: 'NEW_TRANSACTION' // "I just learned of this transaction"
+  NEW_TRANSACTION: 'NEW_TRANSACTION', // "I just learned of this transaction"
+  HELLO: 'HELLO', // "this is my address, remember me"
+  QUERY_PEERS: 'QUERY_PEERS', // "who else do you know?"
+  PEERS: 'PEERS' // "here are the peers I know"
 };
 
 // How many recently-seen transaction ids we remember to stop gossip echoes.
 const SEEN_TX_LIMIT = 10_000;
 
+// Give up dialing a dead peer after this many reconnection attempts so it can
+// be evicted instead of retrying (and being re-advertised) forever.
+const RECONNECT_ATTEMPTS = 10;
+
 // Treat loopback spellings as one host so a node recognises itself and its
 // peers no matter how the URL was written (localhost vs 127.0.0.1 vs ::1).
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
 
+// Turn a URL into a canonical origin, or null if it is not a parseable URL
+// string. Returning null (rather than echoing the raw input) means a hostile or
+// malformed peer address can never flow into connect() and crash the node.
 function normalizeOrigin(url) {
+  if (typeof url !== 'string' || url.length === 0) {
+    return null;
+  }
   try {
     const parsed = new URL(url);
     const host = LOOPBACK_HOSTS.has(parsed.hostname) ? 'localhost' : parsed.hostname;
     return `${parsed.protocol}//${host}:${parsed.port}`;
   } catch (err) {
-    return url;
+    return null;
   }
 }
 
@@ -37,6 +50,8 @@ class P2PNode {
     this.logger = logger;
     this.io = null; // socket.io server (accepts inbound peers)
     this.outbound = new Map(); // peerUrl -> client socket (peers we dialed)
+    this.inbound = new Map(); // peerUrl -> server socket (peers that dialed us, learned via HELLO)
+    this.knownPeers = new Set(); // every peer address we have ever heard of
     this.seenTx = new Set(); // recently seen tx ids (bounded echo guard)
   }
 
@@ -47,39 +62,54 @@ class P2PNode {
     this.io.on('connection', (socket) => {
       this.logger.log(`[p2p] inbound peer connected (${socket.id})`);
       this.wireSocket(socket);
-      // Greet the newcomer: ask for their chain and offer ours.
-      this.requestChain(socket);
-      this.sendChain(socket);
+      this.greet(socket); // introduce ourselves, ask who they know, swap chains
     });
     return this;
   }
 
   // Dial another node and keep the connection alive (auto-reconnect).
   connect(peerUrl) {
-    if (!peerUrl) {
-      return null;
-    }
     const url = normalizeOrigin(peerUrl);
-    if (url === this.selfUrl) {
-      return null; // never dial ourselves, under any spelling
+    if (!url || url === this.selfUrl) {
+      return null; // garbage, or ourselves (under any spelling)
     }
     if (this.outbound.has(url)) {
       return this.outbound.get(url); // already dialing this peer
     }
+    if (this.inbound.has(url)) {
+      return this.inbound.get(url); // already connected to this peer (they dialed us)
+    }
 
-    const socket = connectClient(url, { reconnection: true });
+    let socket;
+    try {
+      socket = connectClient(url, { reconnection: true, reconnectionAttempts: RECONNECT_ATTEMPTS });
+    } catch (err) {
+      this.logger.log(`[p2p] could not dial ${url}: ${err.message}`);
+      return null;
+    }
+    socket.dialedUrl = url; // mark this as a peer WE dialed (outbound)
+    this.knownPeers.add(url);
     this.outbound.set(url, socket);
 
     socket.on('connect', () => {
       this.logger.log(`[p2p] dialed peer ${url}`);
-      this.requestChain(socket);
-      this.sendChain(socket);
+      this.greet(socket); // introduce ourselves, ask who they know, swap chains
     });
     socket.on('connect_error', (err) => {
       this.logger.log(`[p2p] cannot reach ${url}: ${err.message}`);
     });
     socket.on('disconnect', () => {
-      this.logger.log(`[p2p] lost peer ${url}`);
+      if (!socket.dedupedClose) {
+        this.logger.log(`[p2p] lost peer ${url}`);
+      }
+    });
+    // Reconnection attempts exhausted -> the peer is gone; stop tracking it so
+    // it is neither re-advertised nor counted.
+    socket.io.on('reconnect_failed', () => {
+      if (this.outbound.get(url) === socket) {
+        this.outbound.delete(url);
+      }
+      this.logger.log(`[p2p] gave up on dead peer ${url}`);
     });
 
     this.wireSocket(socket);
@@ -98,6 +128,19 @@ class P2PNode {
     socket.on(MSG.CHAIN, (payload) => this.handleChain(payload, socket));
     socket.on(MSG.NEW_BLOCK, (payload) => this.handleNewBlock(payload, socket));
     socket.on(MSG.NEW_TRANSACTION, (payload) => this.handleNewTransaction(payload, socket));
+    socket.on(MSG.HELLO, (payload) => this.handleHello(payload, socket));
+    socket.on(MSG.QUERY_PEERS, () => this.handleQueryPeers(socket));
+    socket.on(MSG.PEERS, (payload) => this.handlePeers(payload));
+  }
+
+  // Say hello (advertise our address), ask who the peer knows, and swap chains.
+  greet(socket) {
+    if (this.selfUrl) {
+      socket.emit(MSG.HELLO, { url: this.selfUrl });
+    }
+    socket.emit(MSG.QUERY_PEERS);
+    this.requestChain(socket);
+    this.sendChain(socket);
   }
 
   // ---- outbound shouts (local origin -> everyone) ---------------------------
@@ -258,17 +301,116 @@ class P2PNode {
     }
   }
 
-  peerCount() {
-    const inbound = this.io ? this.io.sockets.sockets.size : 0;
-    let outbound = 0;
-    for (const socket of this.outbound.values()) {
-      if (socket.connected) {
-        outbound += 1;
+  // ---- peer discovery (auto-assembling the tribe) ---------------------------
+
+  // A peer told us its real address. Remember it, and if we happen to have BOTH
+  // dialed them and been dialed by them, deterministically drop one link so the
+  // pair keeps a single connection (the one initiated by the smaller address).
+  handleHello(payload, socket) {
+    const url = normalizeOrigin(payload && payload.url);
+    if (!url) {
+      return; // missing or non-string address -> ignore (cannot crash us)
+    }
+
+    if (url === this.selfUrl) {
+      // The peer claims our own identity. If it is a socket WE dialed, we looped
+      // back to ourselves (e.g. an alias of this host) -> tear it down.
+      if (socket.dialedUrl && this.outbound.get(socket.dialedUrl) === socket) {
+        this.outbound.delete(socket.dialedUrl);
+        socket.dedupedClose = true;
+        if (typeof socket.close === 'function') {
+          socket.close();
+        }
+      }
+      return; // never record ourselves as a peer
+    }
+
+    this.knownPeers.add(url);
+
+    if (socket.dialedUrl) {
+      return; // a peer WE dialed; already tracked in this.outbound
+    }
+
+    // Inbound peer: record its advertised address. Enforce one address per
+    // socket so a peer cannot inflate the tribe by spamming HELLOs.
+    if (socket.helloUrl && socket.helloUrl !== url && this.inbound.get(socket.helloUrl) === socket) {
+      this.inbound.delete(socket.helloUrl); // drop the stale address it advertised before
+    }
+    socket.helloUrl = url;
+    this.inbound.set(url, socket);
+
+    if (!socket.helloCleanupBound) {
+      socket.helloCleanupBound = true; // bind the cleanup listener only once
+      socket.on('disconnect', () => {
+        if (socket.helloUrl && this.inbound.get(socket.helloUrl) === socket) {
+          this.inbound.delete(socket.helloUrl);
+        }
+      });
+    }
+
+    // Mutual dial: both of us dialed the other. The node with the greater
+    // address gives up its outbound so exactly one link survives.
+    if (this.outbound.has(url) && this.selfUrl && this.selfUrl > url) {
+      const redundant = this.outbound.get(url);
+      this.outbound.delete(url);
+      if (redundant) {
+        redundant.dedupedClose = true; // so the outbound 'disconnect' stays quiet
+        redundant.close();
+      }
+      this.logger.log(`[p2p] deduped mutual dial with ${url} (kept inbound link)`);
+    }
+  }
+
+  handleQueryPeers(socket) {
+    socket.emit(MSG.PEERS, { peers: this.advertisedPeers() });
+  }
+
+  // A peer shared the addresses it knows. Dial any we are not connected to yet;
+  // connect() dedups, so this converges to a fully-assembled network.
+  handlePeers(payload) {
+    if (!payload || !Array.isArray(payload.peers)) {
+      return;
+    }
+    for (const raw of payload.peers) {
+      const url = normalizeOrigin(raw); // returns null for non-strings / garbage
+      if (!url || url === this.selfUrl) {
+        continue;
+      }
+      this.knownPeers.add(url);
+      if (!this.outbound.has(url) && !this.inbound.has(url)) {
+        this.connect(url); // meet the newcomer (connect() is crash-safe)
       }
     }
-    // Note: a peer we both dialed and that dialed us is counted twice until the
-    // Phase 1c identity handshake lets us dedup peers by node id.
-    return inbound + outbound;
+  }
+
+  // Only advertise peers we are actually connected to right now (plus ourselves).
+  // Advertising dead/never-reached addresses would make them ripple across the
+  // network and be re-dialed forever, so discovery would never settle.
+  advertisedPeers() {
+    const peers = new Set(this.connectedPeerUrls());
+    if (this.selfUrl) {
+      peers.add(this.selfUrl);
+    }
+    return Array.from(peers);
+  }
+
+  connectedPeerUrls() {
+    const urls = new Set();
+    for (const [url, socket] of this.outbound) {
+      if (socket.connected) {
+        urls.add(url);
+      }
+    }
+    for (const url of this.inbound.keys()) {
+      urls.add(url);
+    }
+    return Array.from(urls);
+  }
+
+  peerCount() {
+    // After the HELLO dedup settles, each peer pair keeps exactly one link, so
+    // counting live inbound + live outbound sockets does not double-count.
+    return this.connectedPeerUrls().length;
   }
 
   close() {
@@ -276,10 +418,11 @@ class P2PNode {
       socket.close();
     }
     this.outbound.clear();
+    this.inbound.clear();
     if (this.io) {
       this.io.close();
     }
   }
 }
 
-module.exports = { P2PNode, MSG };
+module.exports = { P2PNode, MSG, normalizeOrigin };

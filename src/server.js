@@ -6,6 +6,7 @@ const Blockchain = require('./blockchain');
 const Transaction = require('./transaction');
 const Wallet = require('./wallet');
 const { P2PNode } = require('./p2p');
+const Miner = require('./miner');
 const { loadSnapshot, saveSnapshot } = require('./storage');
 
 const DEFAULT_DATA_FILE = process.env.NODECHAIN_DATA || 'data/nodechain.json';
@@ -18,7 +19,7 @@ function createBlockchain() {
   return new Blockchain();
 }
 
-function createApp(blockchain = createBlockchain(), { p2p = null } = {}) {
+function createApp(blockchain = createBlockchain(), { p2p = null, miner = null } = {}) {
   const app = express();
   app.use(express.json({ limit: '1mb' }));
 
@@ -33,7 +34,8 @@ function createApp(blockchain = createBlockchain(), { p2p = null } = {}) {
   app.get('/peers', (req, res) => {
     res.json({
       count: p2p ? p2p.peerCount() : 0,
-      dialed: p2p ? Array.from(p2p.outbound.keys()) : []
+      connected: p2p ? p2p.connectedPeerUrls() : [],
+      known: p2p ? Array.from(p2p.knownPeers) : []
     });
   });
 
@@ -113,6 +115,41 @@ function createApp(blockchain = createBlockchain(), { p2p = null } = {}) {
     }
   });
 
+  // ---- auto-mining control ---------------------------------------------------
+
+  app.get('/mining', (req, res) => {
+    if (!miner) {
+      res.status(501).json({ error: 'auto-mining is not enabled on this node' });
+      return;
+    }
+    res.json(miner.status());
+  });
+
+  app.post('/mining/start', (req, res, next) => {
+    try {
+      if (!miner) {
+        res.status(501).json({ error: 'auto-mining is not enabled on this node' });
+        return;
+      }
+      const status = miner.start({
+        minerAddress: req.body?.minerAddress || req.query.miner,
+        interval: req.body?.interval,
+        mineEmpty: req.body?.mineEmpty
+      });
+      res.json({ message: 'Auto-mining started', ...status });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post('/mining/stop', (req, res) => {
+    if (!miner) {
+      res.status(501).json({ error: 'auto-mining is not enabled on this node' });
+      return;
+    }
+    res.json({ message: 'Auto-mining stopped', ...miner.stop() });
+  });
+
   app.post('/nodes/register', (req, res, next) => {
     try {
       const nodes = req.body?.nodes;
@@ -171,11 +208,17 @@ function createApp(blockchain = createBlockchain(), { p2p = null } = {}) {
 function startNode({
   port = Number(process.env.PORT || 3000),
   peers = [],
-  blockchain = createBlockchain()
+  blockchain = createBlockchain(),
+  // The address we advertise to peers. Defaults to localhost for single-machine
+  // labs; set ADVERTISED_URL (or pass selfUrl) when nodes live on different hosts.
+  selfUrl = process.env.ADVERTISED_URL || `http://localhost:${port}`
 } = {}) {
-  const selfUrl = `http://localhost:${port}`;
   const p2p = new P2PNode(blockchain, { selfUrl });
-  const app = createApp(blockchain, { p2p });
+  const miner = new Miner(blockchain, {
+    p2p,
+    onBlock: () => saveSnapshot(DEFAULT_DATA_FILE, blockchain) // persist each mined block
+  });
+  const app = createApp(blockchain, { p2p, miner });
   const server = http.createServer(app);
   p2p.attach(server);
 
@@ -185,9 +228,20 @@ function startNode({
       console.log(`[p2p] dialing initial peers: ${peers.join(', ')}`);
     }
     p2p.connectToPeers(peers);
+
+    // Auto-start mining if the environment asks for it. Wait one interval before
+    // the first block so the initial peer sync can complete first.
+    if (process.env.MINER_ADDRESS) {
+      miner.start({
+        minerAddress: process.env.MINER_ADDRESS,
+        interval: Number(process.env.MINE_INTERVAL) || undefined,
+        mineEmpty: process.env.MINE_EMPTY === 'true',
+        immediate: false
+      });
+    }
   });
 
-  return { app, server, p2p, blockchain };
+  return { app, server, p2p, miner, blockchain };
 }
 
 if (require.main === module) {
