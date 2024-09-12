@@ -216,7 +216,8 @@ function startNode({
   const p2p = new P2PNode(blockchain, { selfUrl });
   const miner = new Miner(blockchain, {
     p2p,
-    onBlock: () => saveSnapshot(DEFAULT_DATA_FILE, blockchain) // persist each mined block
+    onBlock: () => saveSnapshot(DEFAULT_DATA_FILE, blockchain), // persist each mined block
+    grindTimeout: Number(process.env.GRIND_TIMEOUT) || undefined
   });
   const app = createApp(blockchain, { p2p, miner });
   const server = http.createServer(app);

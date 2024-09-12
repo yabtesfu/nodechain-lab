@@ -11,13 +11,13 @@ test('start requires a miner address', () => {
   assert.throws(() => miner.start({}), /miner address is required/);
 });
 
-test('mineOnce mines pending transactions, drains the mempool, and broadcasts', () => {
+test('mineOnce mines pending transactions, drains the mempool, and broadcasts', async () => {
   const chain = new Blockchain({ difficulty: 1 });
   const alice = Wallet.create();
   const bob = Wallet.create();
 
   const setup = new Miner(chain);
-  setup.mineOnce(alice.address); // give alice a block reward to spend
+  await setup.mineOnce(alice.address); // give alice a block reward to spend
 
   const tx = alice.createTransaction({
     to: bob.address,
@@ -29,36 +29,74 @@ test('mineOnce mines pending transactions, drains the mempool, and broadcasts', 
 
   const broadcasts = [];
   const miner = new Miner(chain, { p2p: { broadcastBlock: (b) => broadcasts.push(b) } });
-  const block = miner.mineOnce(alice.address);
+  const block = await miner.mineOnce(alice.address);
 
+  assert.ok(block, 'a block was produced');
   assert.ok(block.transactions.some((t) => t.id === tx.id), 'tx included in the block');
   assert.equal(chain.mempool.list().length, 0, 'mempool drained');
   assert.equal(broadcasts.length, 1, 'block broadcast to peers');
   assert.equal(chain.getBalance(bob.address), 5);
+  setup.close();
+  miner.close();
 });
 
-test('a tick with no pending txs and mineEmpty=false mines nothing', () => {
+test('a tick with no pending txs and mineEmpty=false mines nothing', async () => {
   const chain = new Blockchain({ difficulty: 1 });
   const miner = new Miner(chain);
   miner.running = true;
   miner.mineEmpty = false;
   miner.minerAddress = Wallet.create().address;
-  miner.tick();
-  miner.stop();
+  await miner.tick();
   assert.equal(miner.blocksMined, 0);
   assert.equal(chain.chain.length, 1, 'still just genesis');
+  miner.close();
 });
 
-test('a tick with mineEmpty=true mines an empty (coinbase-only) block', () => {
+test('a tick with mineEmpty=true mines an empty (coinbase-only) block', async () => {
   const chain = new Blockchain({ difficulty: 1 });
   const miner = new Miner(chain);
   miner.running = true;
   miner.mineEmpty = true;
   miner.minerAddress = Wallet.create().address;
-  miner.tick();
-  miner.stop();
+  await miner.tick();
   assert.equal(miner.blocksMined, 1);
   assert.equal(chain.lastBlock.transactions.length, 1, 'only the coinbase tx');
+  miner.close();
+});
+
+test('a grind that exceeds its timeout is abandoned, not latched forever', async () => {
+  const chain = new Blockchain({ difficulty: 7 }); // effectively never completes fast
+  const miner = new Miner(chain, { grindTimeout: 150 }); // tiny leash
+
+  const first = await miner.mineOnce(Wallet.create().address);
+  assert.equal(first, null, 'timed-out grind returns null');
+  assert.equal(miner.grinding, false, 'grinding flag cleared (miner is not wedged)');
+
+  // Crucially, a second attempt still runs — the miner did not latch.
+  const second = await miner.mineOnce(Wallet.create().address);
+  assert.equal(second, null);
+  assert.equal(miner.grinding, false);
+  assert.equal(chain.chain.length, 1, 'no block was produced at this difficulty');
+  miner.close();
+});
+
+test('a grind is aborted when the chain head moves under it (no stale double-mine)', async () => {
+  const chain = new Blockchain({ difficulty: 6 }); // slow grind, so we can interrupt it
+  const alice = Wallet.create();
+  const miner = new Miner(chain);
+
+  const mining = miner.mineOnce(alice.address); // do not await yet — it is grinding
+  await new Promise((resolve) => setTimeout(resolve, 50)); // let the worker start
+
+  // A competing block arrives (from a peer, here forged on a chain sharing genesis).
+  const peer = new Blockchain({ difficulty: 1 });
+  peer.minePendingTransactions(Wallet.create().address);
+  chain.addBlock(peer.chain[1]); // advances our head -> should abort the grind
+
+  const result = await mining;
+  assert.equal(result, null, 'the stale grind was abandoned');
+  assert.equal(chain.chain.length, 2, 'the peer block is the head; no double block was mined');
+  miner.close();
 });
 
 test('interval is clamped into a safe range (no setTimeout overflow / 1ms runaway)', () => {

@@ -1,5 +1,6 @@
 'use strict';
 
+const EventEmitter = require('events');
 const Block = require('./block');
 const Mempool = require('./mempool');
 const Transaction = require('./transaction');
@@ -11,7 +12,11 @@ function cloneState(state) {
   };
 }
 
-class Blockchain {
+// Blockchain is an EventEmitter so other parts of the node can react to head
+// changes in real time: 'block:added' (a new block was appended) and
+// 'chain:replaced' (a stronger peer chain was adopted). The auto-miner uses
+// these to abort a now-stale grind; a live dashboard can use them too.
+class Blockchain extends EventEmitter {
   constructor({
     difficulty = 3,
     miningReward = 50,
@@ -19,6 +24,7 @@ class Blockchain {
     targetBlockTime = 30_000,
     genesisTimestamp = 0
   } = {}) {
+    super();
     this.difficulty = difficulty;
     this.miningReward = miningReward;
     this.adjustmentInterval = adjustmentInterval;
@@ -188,7 +194,10 @@ class Blockchain {
     return { selected, fees };
   }
 
-  minePendingTransactions(minerAddress) {
+  // Build the next block WITHOUT grinding its proof-of-work. Returns the unmined
+  // candidate plus the transactions it selected, so the caller can grind it
+  // however it likes (synchronously, or off-thread in a worker).
+  createCandidate(minerAddress) {
     if (!minerAddress) {
       throw new Error('A miner address is required');
     }
@@ -208,11 +217,23 @@ class Blockchain {
       previousHash: this.lastBlock.hash,
       difficulty: this.nextDifficulty(),
       miner: minerAddress
-    }).mine();
+    });
 
+    return { block, selected };
+  }
+
+  // Append an already-mined block and drop its transactions from the mempool.
+  commitMinedBlock(block, selected = []) {
     this.addBlock(block);
     this.mempool.clearIncluded(selected);
     return block;
+  }
+
+  // Synchronous mine (used by the manual /mine route and simple callers).
+  minePendingTransactions(minerAddress) {
+    const { block, selected } = this.createCandidate(minerAddress);
+    block.mine();
+    return this.commitMinedBlock(block, selected);
   }
 
   addBlock(input) {
@@ -233,6 +254,7 @@ class Blockchain {
     }
 
     this.chain.push(block);
+    this.emit('block:added', block);
     return block;
   }
 
@@ -304,6 +326,7 @@ class Blockchain {
       return false;
     }
     this.chain = blocks;
+    this.emit('chain:replaced', this.chain);
     return true;
   }
 

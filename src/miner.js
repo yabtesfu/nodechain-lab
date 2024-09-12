@@ -1,5 +1,7 @@
 'use strict';
 
+const { mineHeader } = require('./pow');
+
 // setTimeout silently reduces any delay above the 32-bit signed max to 1ms, so
 // we clamp the mining interval into a safe range to avoid an accidental runaway.
 const MIN_INTERVAL = 10;
@@ -26,11 +28,12 @@ function toBool(value, fallback) {
 // to poke POST /mine. It watches the mempool and, on a steady tick, mines a
 // block, shouts it to peers, and persists it.
 class Miner {
-  constructor(blockchain, { p2p = null, onBlock = null, logger = console } = {}) {
+  constructor(blockchain, { p2p = null, onBlock = null, logger = console, grindTimeout } = {}) {
     this.blockchain = blockchain;
     this.p2p = p2p; // to broadcast freshly mined blocks
     this.onBlock = onBlock; // side effect after a block is mined (e.g. persist)
     this.logger = logger;
+    this.grindTimeout = grindTimeout; // max ms per grind before we abandon it
 
     this.minerAddress = null;
     this.interval = 5000; // ms between mining ticks
@@ -38,6 +41,20 @@ class Miner {
     this.timer = null;
     this.running = false;
     this.blocksMined = 0;
+
+    // Cancellation: when the chain head moves under us (a peer block or a manual
+    // mine), abort the in-flight grind so we do not waste work on a stale block.
+    this.grinding = false;
+    this.abortController = null;
+    this.abortStaleGrind = () => {
+      if (this.grinding && this.abortController) {
+        this.abortController.abort();
+      }
+    };
+    if (typeof blockchain.on === 'function') {
+      blockchain.on('block:added', this.abortStaleGrind);
+      blockchain.on('chain:replaced', this.abortStaleGrind);
+    }
   }
 
   start({ minerAddress, interval, mineEmpty, immediate = true } = {}) {
@@ -74,8 +91,20 @@ class Miner {
       clearTimeout(this.timer);
       this.timer = null;
     }
+    if (this.grinding && this.abortController) {
+      this.abortController.abort(); // cancel any in-flight grind
+    }
     this.logger.log('[miner] stopped');
     return this.status();
+  }
+
+  // Detach from the blockchain's events (for a full teardown).
+  close() {
+    this.stop();
+    if (typeof this.blockchain.off === 'function') {
+      this.blockchain.off('block:added', this.abortStaleGrind);
+      this.blockchain.off('chain:replaced', this.abortStaleGrind);
+    }
   }
 
   // We reschedule with setTimeout (not setInterval) so a slow grind can never
@@ -84,19 +113,28 @@ class Miner {
     if (!this.running) {
       return;
     }
+    if (this.timer) {
+      clearTimeout(this.timer); // never leave two timers pending at once
+    }
     this.timer = setTimeout(() => this.tick(), delay);
     if (this.timer.unref) {
       this.timer.unref(); // do not keep the process alive just for mining
     }
   }
 
-  tick() {
+  async tick() {
     if (!this.running) {
+      return;
+    }
+    if (this.grinding) {
+      // A grind is already in flight (e.g. a long block); do not start a second
+      // one. Just check back later.
+      this.scheduleNext(this.interval);
       return;
     }
     try {
       if (this.hasWork() || this.mineEmpty) {
-        this.mineOnce();
+        await this.mineOnce();
       }
     } catch (err) {
       this.logger.log(`[miner] mining error: ${err.message}`);
@@ -109,13 +147,48 @@ class Miner {
     return this.blockchain.mempool.list().length > 0;
   }
 
-  // Mine exactly one block and publish it. Used by the tick loop and callable
-  // directly (e.g. for a one-shot mine or from a test).
-  mineOnce(minerAddress = this.minerAddress) {
+  // Mine exactly one block and publish it. The proof-of-work grind runs in a
+  // worker thread so the main event loop stays free for gossip and HTTP. If the
+  // chain head moves under us mid-grind (a peer block), the grind is aborted and
+  // this resolves null so the next tick mines afresh on the new head.
+  async mineOnce(minerAddress = this.minerAddress) {
     if (!minerAddress) {
       throw new Error('A miner address is required to mine');
     }
-    const block = this.blockchain.minePendingTransactions(minerAddress);
+
+    const { block, selected } = this.blockchain.createCandidate(minerAddress);
+    this.abortController = new AbortController();
+    this.grinding = true;
+
+    let solution;
+    try {
+      solution = await mineHeader(block.header(), block.difficulty, {
+        signal: this.abortController.signal,
+        timeout: this.grindTimeout
+      });
+    } catch (err) {
+      // Aborted (stale head), timed out, or a worker error — abandon this
+      // candidate. grinding is cleared so the next tick mines a fresh one.
+      this.grinding = false;
+      if (err.message === 'grind timed out') {
+        this.logger.log('[miner] grind timed out; retrying with a fresh candidate');
+      } else if (err.message !== 'aborted') {
+        this.logger.log(`[miner] grind failed: ${err.message}`);
+      }
+      return null;
+    }
+    this.grinding = false;
+
+    // Guard against a race where the head advanced just as the grind finished.
+    if (block.index !== this.blockchain.chain.length ||
+        block.previousHash !== this.blockchain.lastBlock.hash) {
+      this.logger.log(`[miner] discarded stale block ${block.index} (head moved)`);
+      return null;
+    }
+
+    block.nonce = solution.nonce;
+    block.hash = solution.hash;
+    this.blockchain.commitMinedBlock(block, selected);
     this.blocksMined += 1;
     this.logger.log(
       `[miner] mined block ${block.index} (${block.hash.slice(0, 12)}) ` +
