@@ -1,9 +1,11 @@
 'use strict';
 
+const http = require('http');
 const express = require('express');
 const Blockchain = require('./blockchain');
 const Transaction = require('./transaction');
 const Wallet = require('./wallet');
+const { P2PNode } = require('./p2p');
 const { loadSnapshot, saveSnapshot } = require('./storage');
 
 const DEFAULT_DATA_FILE = process.env.NODECHAIN_DATA || 'data/nodechain.json';
@@ -147,15 +149,42 @@ function createApp(blockchain = createBlockchain()) {
   return app;
 }
 
+// Boot a full node: HTTP API + P2P drums sharing one port, plus any peers
+// we should dial on startup.
+function startNode({
+  port = Number(process.env.PORT || 3000),
+  peers = [],
+  blockchain = createBlockchain()
+} = {}) {
+  const app = createApp(blockchain);
+  const server = http.createServer(app);
+  const selfUrl = `http://localhost:${port}`;
+  const p2p = new P2PNode(blockchain, { selfUrl });
+  p2p.attach(server);
+
+  server.listen(port, () => {
+    console.log(`Nodechain Lab (HTTP + P2P) listening on ${selfUrl}`);
+    if (peers.length > 0) {
+      console.log(`[p2p] dialing initial peers: ${peers.join(', ')}`);
+    }
+    p2p.connectToPeers(peers);
+  });
+
+  return { app, server, p2p, blockchain };
+}
+
 if (require.main === module) {
   const port = Number(process.env.PORT || 3000);
-  createApp().listen(port, () => {
-    console.log(`Nodechain Lab listening on http://localhost:${port}`);
-  });
+  const peers = (process.env.PEERS || '')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
+  startNode({ port, peers });
 }
 
 module.exports = {
   createApp,
-  createBlockchain
+  createBlockchain,
+  startNode
 };
 
