@@ -96,6 +96,16 @@ function createApp(blockchain = createBlockchain(), { p2p = null, miner = null }
     });
   });
 
+  // What a wallet needs to build & sign its next transaction (client-side).
+  app.get('/accounts/:address', (req, res) => {
+    const { address } = req.params;
+    res.json({
+      address,
+      balance: blockchain.getBalance(address),
+      nextNonce: blockchain.nextNonce(address)
+    });
+  });
+
   // One call the dashboard makes on load to paint the whole picture at once.
   app.get('/overview', (req, res) => {
     const state = blockchain.getState();
@@ -125,26 +135,9 @@ function createApp(blockchain = createBlockchain(), { p2p = null, miner = null }
 
   app.post('/transactions/new', (req, res, next) => {
     try {
-      const values = req.body || {};
-      let transaction;
-
-      if (values.privateKey && values.publicKey) {
-        const wallet = new Wallet({
-          privateKey: values.privateKey,
-          publicKey: values.publicKey,
-          address: values.from
-        });
-        transaction = wallet.createTransaction({
-          to: values.to,
-          amount: values.amount,
-          fee: values.fee || 0,
-          nonce: values.nonce || blockchain.nextNonce(wallet.address),
-          memo: values.memo || ''
-        });
-      } else {
-        transaction = new Transaction(values);
-      }
-
+      // Only accept an already-signed transaction. The node never receives a
+      // private key — signing happens in the wallet/browser (see web/src/crypto.js).
+      const transaction = new Transaction(req.body || {});
       const accepted = blockchain.addTransaction(transaction);
       if (p2p) {
         p2p.broadcastTransaction(accepted); // shout it to the tribe

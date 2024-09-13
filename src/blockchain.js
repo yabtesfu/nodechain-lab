@@ -152,6 +152,10 @@ class Blockchain extends EventEmitter {
     if (!tx.to || tx.amount <= 0 || tx.fee < 0) {
       return false;
     }
+    // Reject attacker-shaped fields: memo must be a string, timestamp a real number.
+    if (typeof tx.memo !== 'string' || !Number.isFinite(tx.timestamp)) {
+      return false;
+    }
     if (tx.isCoinbase()) {
       return true;
     }

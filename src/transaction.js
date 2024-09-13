@@ -82,8 +82,8 @@ class Transaction {
       return Boolean(this.to) && this.amount >= 0;
     }
 
-    if (!this.publicKey || !this.signature) {
-      return false;
+    if (typeof this.publicKey !== 'string' || typeof this.signature !== 'string') {
+      return false; // non-string keys must be rejected, not throw downstream
     }
 
     if (publicKeyToAddress(this.publicKey) !== this.from) {

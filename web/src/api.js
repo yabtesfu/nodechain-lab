@@ -17,9 +17,10 @@ async function req(path, opts = {}) {
 
 export const getOverview = () => req('/overview');
 export const getChain = () => req('/chain');
-export const createWallet = () => req('/wallets', { method: 'POST' });
-export const sendTransaction = (payload) =>
-  req('/transactions/new', { method: 'POST', body: JSON.stringify(payload) });
+export const getAccount = (address) => req(`/accounts/${address}`);
+// Submit an ALREADY-SIGNED transaction (signed in the browser). No private key.
+export const submitTransaction = (signedTx) =>
+  req('/transactions/new', { method: 'POST', body: JSON.stringify(signedTx) });
 export const mineOnce = (minerAddress) =>
   req('/mine', { method: 'POST', body: JSON.stringify({ minerAddress }) });
 export const startMining = (payload) =>

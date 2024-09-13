@@ -2,13 +2,14 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   API,
   getOverview,
-  createWallet,
-  sendTransaction,
+  getAccount,
+  submitTransaction,
   mineOnce,
   startMining,
   stopMining,
   openEvents
 } from './api.js';
+import { createWallet, signTransaction } from './crypto.js';
 
 const short = (s, n = 10) => (s && s.length > n ? `${s.slice(0, n)}…` : s || '');
 const fmt = (n) => new Intl.NumberFormat().format(n ?? 0);
@@ -86,15 +87,12 @@ export default function App() {
     }
   };
 
-  const onCreateWallet = async () => {
-    try {
-      const w = await createWallet();
-      setWallet(w);
-      localStorage.setItem(WALLET_KEY, JSON.stringify(w));
-      flashMsg('New wallet created');
-    } catch (e) {
-      flashMsg(e.message, true);
-    }
+  const onCreateWallet = () => {
+    // Generated entirely in the browser — the private key never touches the node.
+    const w = createWallet();
+    setWallet(w);
+    localStorage.setItem(WALLET_KEY, JSON.stringify(w));
+    flashMsg('New wallet created (keys stay in your browser)');
   };
 
   if (!overview) {
@@ -268,8 +266,9 @@ function WalletPanel({ wallet, onCreate }) {
         <div className="wallet">
           <label>Address</label>
           <code className="pill">{wallet.address}</code>
-          <p className="warn">
-            Private key held in your browser (this lab signs server-side for now).
+          <p className="ok-note">
+            🔒 Private key stays in your browser — transactions are signed here and
+            the key is never sent to the node.
           </p>
           <button className="ghost" onClick={onCreate}>
             New wallet
@@ -296,15 +295,16 @@ function SendPanel({ wallet, onDone }) {
     if (!wallet) return onDone('Create a wallet first', true);
     setBusy(true);
     try {
-      await sendTransaction({
-        privateKey: wallet.privateKey,
-        publicKey: wallet.publicKey,
-        from: wallet.address,
+      // Ask the node only for the next nonce; sign locally; send the signature.
+      const account = await getAccount(wallet.address);
+      const signed = signTransaction(wallet, {
         to: to.trim(),
         amount: Number(amount),
-        fee: Number(fee)
+        fee: Number(fee),
+        nonce: account.nextNonce
       });
-      onDone('Transaction submitted');
+      await submitTransaction(signed);
+      onDone('Transaction signed in-browser and submitted');
       setTo('');
       setAmount('');
     } catch (err) {

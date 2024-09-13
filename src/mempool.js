@@ -31,8 +31,10 @@ class Mempool {
   }
 
   ordered(limit = 100) {
+    // Highest fee first; ties broken by arrival order (a stable sort preserves
+    // the Map's insertion order) rather than the attacker-supplied timestamp.
     return this.list()
-      .sort((a, b) => b.fee - a.fee || a.timestamp - b.timestamp)
+      .sort((a, b) => b.fee - a.fee)
       .slice(0, limit);
   }
 
