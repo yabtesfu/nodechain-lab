@@ -95,7 +95,9 @@ class Blockchain extends EventEmitter {
     const tx = input instanceof Transaction ? input : new Transaction(input);
     const state = this.stateWithPending();
     this.assertValidTransaction(tx, state);
-    return this.mempool.add(tx);
+    const added = this.mempool.add(tx);
+    this.emit('transaction:added', added);
+    return added;
   }
 
   stateWithPending() {

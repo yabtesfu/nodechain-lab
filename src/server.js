@@ -1,13 +1,18 @@
 'use strict';
 
 const http = require('http');
+const path = require('path');
+const fs = require('fs');
 const express = require('express');
 const Blockchain = require('./blockchain');
 const Transaction = require('./transaction');
 const Wallet = require('./wallet');
 const { P2PNode } = require('./p2p');
 const Miner = require('./miner');
+const SSEHub = require('./sse');
 const { loadSnapshot, saveSnapshot } = require('./storage');
+
+const WEB_DIST = path.join(__dirname, '..', 'web', 'dist');
 
 const DEFAULT_DATA_FILE = process.env.NODECHAIN_DATA || 'data/nodechain.json';
 
@@ -22,6 +27,42 @@ function createBlockchain() {
 function createApp(blockchain = createBlockchain(), { p2p = null, miner = null } = {}) {
   const app = express();
   app.use(express.json({ limit: '1mb' }));
+
+  // Allow the dashboard (Vite dev server on another port) to call the API.
+  app.use((req, res, next) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    if (req.method === 'OPTIONS') {
+      res.sendStatus(204);
+      return;
+    }
+    next();
+  });
+
+  // ---- live event stream for the dashboard ----------------------------------
+  const events = new SSEHub();
+  app.get('/events', (req, res) => events.handler(req, res));
+
+  blockchain.on('block:added', (block) => {
+    events.broadcast('block:added', {
+      block: block.toJSON(),
+      height: blockchain.chain.length - 1,
+      cumulativeWork: blockchain.cumulativeWork()
+    });
+  });
+  blockchain.on('chain:replaced', () => {
+    events.broadcast('chain:replaced', {
+      height: blockchain.chain.length - 1,
+      cumulativeWork: blockchain.cumulativeWork()
+    });
+  });
+  blockchain.on('transaction:added', (tx) => {
+    events.broadcast('transaction:added', {
+      transaction: tx.toJSON(),
+      mempoolSize: blockchain.mempool.list().length
+    });
+  });
 
   app.get('/health', (req, res) => {
     res.json({
@@ -52,6 +93,25 @@ function createApp(blockchain = createBlockchain(), { p2p = null, miner = null }
     res.json({
       balances: Object.fromEntries(state.balances),
       nonces: Object.fromEntries(state.nonces)
+    });
+  });
+
+  // One call the dashboard makes on load to paint the whole picture at once.
+  app.get('/overview', (req, res) => {
+    const state = blockchain.getState();
+    res.json({
+      height: blockchain.chain.length - 1,
+      cumulativeWork: blockchain.cumulativeWork(),
+      difficulty: blockchain.lastBlock.difficulty,
+      nextDifficulty: blockchain.nextDifficulty(),
+      miningReward: blockchain.miningReward,
+      mempoolSize: blockchain.mempool.list().length,
+      mempool: blockchain.mempool.toJSON(),
+      peers: p2p ? p2p.peerCount() : 0,
+      connectedPeers: p2p ? p2p.connectedPeerUrls() : [],
+      mining: miner ? miner.status() : null,
+      recentBlocks: blockchain.chain.slice(-12).reverse().map((b) => b.toJSON()),
+      balances: Object.fromEntries(state.balances)
     });
   });
 
@@ -192,6 +252,19 @@ function createApp(blockchain = createBlockchain(), { p2p = null, miner = null }
     }
   });
 
+  // Serve the built dashboard (web/dist) if it has been built, so a single
+  // `npm start` gives you the API, P2P, and the UI on one port.
+  if (fs.existsSync(WEB_DIST)) {
+    app.use(express.static(WEB_DIST));
+    app.get('*', (req, res, next) => {
+      if (req.path.includes('.') || req.method !== 'GET') {
+        next();
+        return;
+      }
+      res.sendFile(path.join(WEB_DIST, 'index.html')); // SPA fallback
+    });
+  }
+
   app.use((error, req, res, next) => {
     if (res.headersSent) {
       next(error);
@@ -200,6 +273,7 @@ function createApp(blockchain = createBlockchain(), { p2p = null, miner = null }
     res.status(400).json({ error: error.message });
   });
 
+  app.locals.events = events; // expose the SSE hub for shutdown/testing
   return app;
 }
 
