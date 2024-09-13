@@ -148,6 +148,41 @@ test('repeated HELLOs on one socket keep exactly one advertised address', () => 
   assert.ok(p2p.inbound.has('http://localhost:4003'), 'keeps the latest address');
 });
 
+test('multi-host mutual dial: the greater address drops its outbound (one link survives)', () => {
+  // Two nodes on real hostnames (as in docker-compose), both dialed each other.
+  const node2 = new P2PNode(new Blockchain(), { selfUrl: 'http://node2:3000' });
+  let closed = false;
+  node2.outbound.set('http://node1:3000', {
+    dialedUrl: 'http://node1:3000',
+    connected: true,
+    close() { closed = true; },
+    on() {},
+    emit() {}
+  });
+  // node1 dialed us too; its HELLO advertises its ADVERTISED_URL.
+  node2.handleHello({ url: 'http://node1:3000' }, { on() {} });
+
+  assert.equal(closed, true, 'node2 (greater address) dropped its redundant outbound');
+  assert.equal(node2.outbound.has('http://node1:3000'), false);
+  assert.ok(node2.inbound.has('http://node1:3000'), 'kept exactly one (inbound) link');
+});
+
+test('multi-host mutual dial: the smaller address keeps its outbound', () => {
+  const node1 = new P2PNode(new Blockchain(), { selfUrl: 'http://node1:3000' });
+  let closed = false;
+  node1.outbound.set('http://node2:3000', {
+    dialedUrl: 'http://node2:3000',
+    connected: true,
+    close() { closed = true; },
+    on() {},
+    emit() {}
+  });
+  node1.handleHello({ url: 'http://node2:3000' }, { on() {} });
+
+  assert.equal(closed, false, 'node1 (smaller address) keeps its outbound; node2 drops its own');
+  assert.ok(node1.outbound.has('http://node2:3000'));
+});
+
 test('a self-loop via a non-loopback alias is detected and torn down', () => {
   const p2p = new P2PNode(new Blockchain(), { selfUrl: 'http://localhost:3000' });
   let closed = false;

@@ -1,0 +1,56 @@
+# A 3-node Nodechain tribe on one machine.
+#
+#   docker compose up --build
+#
+# node1 auto-mines; node2 dials node1; node3 dials node2. Through peer exchange
+# node3 also discovers node1, so the network self-assembles into a full mesh and
+# every mined block propagates to all three. Open each node's live dashboard:
+#   node1 -> http://localhost:3001
+#   node2 -> http://localhost:3002
+#   node3 -> http://localhost:3003
+
+x-healthcheck: &hc
+  test: ["CMD", "wget", "-qO-", "http://localhost:3000/health"]
+  interval: 10s
+  timeout: 3s
+  retries: 5
+
+services:
+  node1:
+    build: .
+    container_name: nodechain-node1
+    environment:
+      PORT: "3000"
+      ADVERTISED_URL: "http://node1:3000"
+      MINER_ADDRESS: "miner-node1"
+      MINE_INTERVAL: "4000"
+      MINE_EMPTY: "true"
+    ports:
+      - "3001:3000"
+    healthcheck: *hc
+
+  node2:
+    build: .
+    container_name: nodechain-node2
+    depends_on:
+      - node1
+    environment:
+      PORT: "3000"
+      ADVERTISED_URL: "http://node2:3000"
+      PEERS: "http://node1:3000"
+    ports:
+      - "3002:3000"
+    healthcheck: *hc
+
+  node3:
+    build: .
+    container_name: nodechain-node3
+    depends_on:
+      - node2
+    environment:
+      PORT: "3000"
+      ADVERTISED_URL: "http://node3:3000"
+      PEERS: "http://node2:3000"
+    ports:
+      - "3003:3000"
+    healthcheck: *hc
