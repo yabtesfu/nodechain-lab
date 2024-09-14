@@ -2,11 +2,11 @@
 
 ![CI](https://github.com/yabtesfu/nodechain-lab/actions/workflows/ci.yml/badge.svg)
 
-> A hands-on, **real-time** blockchain built from scratch in Node.js — peer-to-peer
+> A hands-on, **real-time** blockchain built from scratch in Node.js - peer-to-peer
 > gossip, self-mining nodes, off-thread proof-of-work, a live React dashboard, and
 > a one-command multi-node demo. Educational, not a production cryptocurrency.
 
-<!-- Badge path assumes github.com/yabtesfu/nodechain-lab — update it if your repo differs. -->
+<!-- Badge path assumes github.com/yabtesfu/nodechain-lab - update it if your repo differs. -->
 
 Nodechain Lab starts from the classic "toy blockchain" idea and adds the moving
 parts that make it feel like a real network:
@@ -23,7 +23,7 @@ parts that make it feel like a real network:
   better block arrives
 - 📊 **Live React dashboard**: watch blocks land, the mempool fill/drain, peers,
   and balances update in real time (Server-Sent Events)
-- 🔒 **Client-side signing**: the dashboard signs transactions in the browser —
+- 🔒 **Client-side signing**: the dashboard signs transactions in the browser -
   **private keys never leave your device**
 - 📦 **One-command multi-node demo** via Docker Compose
 
@@ -115,7 +115,7 @@ curl -X POST http://localhost:3000/mining/stop
 curl http://localhost:3000/events
 ```
 
-Transactions are submitted **pre-signed only** — the dashboard (or any wallet)
+Transactions are submitted **pre-signed only** - the dashboard (or any wallet)
 signs them locally and posts the signature and public key; the node never
 receives a private key.
 
@@ -177,4 +177,4 @@ worker-thread cancellation), and the SSE hub.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT - see [LICENSE](LICENSE).

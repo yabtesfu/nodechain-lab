@@ -136,7 +136,7 @@ function createApp(blockchain = createBlockchain(), { p2p = null, miner = null }
   app.post('/transactions/new', (req, res, next) => {
     try {
       // Only accept an already-signed transaction. The node never receives a
-      // private key — signing happens in the wallet/browser (see web/src/crypto.js).
+      // private key - signing happens in the wallet/browser (see web/src/crypto.js).
       const transaction = new Transaction(req.body || {});
       const accepted = blockchain.addTransaction(transaction);
       if (p2p) {

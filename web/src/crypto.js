@@ -4,7 +4,7 @@ import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
 
 // This MUST match src/crypto.js on the node exactly, or the node will reject
 // what we sign here. Keys are hex (secp256k1); the private key never leaves the
-// browser — only the public key and signature are sent to the node.
+// browser - only the public key and signature are sent to the node.
 
 const MAX_CANONICALIZE_DEPTH = 64;
 
@@ -43,7 +43,7 @@ export function createWallet() {
 }
 
 // Build and sign a transaction in the browser. Returns exactly the fields the
-// node expects (no private key) — the node re-hashes the same payload and
+// node expects (no private key) - the node re-hashes the same payload and
 // verifies the signature against the public key.
 export function signTransaction(wallet, { to, amount, fee, nonce, memo = '' }) {
   const payload = {

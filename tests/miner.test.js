@@ -72,7 +72,7 @@ test('a grind that exceeds its timeout is abandoned, not latched forever', async
   assert.equal(first, null, 'timed-out grind returns null');
   assert.equal(miner.grinding, false, 'grinding flag cleared (miner is not wedged)');
 
-  // Crucially, a second attempt still runs — the miner did not latch.
+  // Crucially, a second attempt still runs - the miner did not latch.
   const second = await miner.mineOnce(Wallet.create().address);
   assert.equal(second, null);
   assert.equal(miner.grinding, false);
@@ -85,7 +85,7 @@ test('a grind is aborted when the chain head moves under it (no stale double-min
   const alice = Wallet.create();
   const miner = new Miner(chain);
 
-  const mining = miner.mineOnce(alice.address); // do not await yet — it is grinding
+  const mining = miner.mineOnce(alice.address); // do not await yet - it is grinding
   await new Promise((resolve) => setTimeout(resolve, 50)); // let the worker start
 
   // A competing block arrives (from a peer, here forged on a chain sharing genesis).

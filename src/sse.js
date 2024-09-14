@@ -46,7 +46,7 @@ class SSEHub {
   }
 
   // Write to one client, honoring backpressure. res.write() does NOT throw for a
-  // stalled socket — it returns false and buffers — so we watch the buffer size
+  // stalled socket - it returns false and buffers - so we watch the buffer size
   // and drop a client that has fallen too far behind.
   send(res, payload) {
     try {

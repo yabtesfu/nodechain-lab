@@ -12,7 +12,7 @@ const DEFAULT_GRIND_TIMEOUT = 120_000;
 
 // Grind a block header's proof-of-work in a worker thread. Resolves with
 // { nonce, hash } once found. Pass an AbortSignal to cancel a now-stale grind
-// (e.g. a better block arrived from a peer) — the worker is terminated and the
+// (e.g. a better block arrived from a peer) - the worker is terminated and the
 // promise rejects with an 'aborted' error. Exceeding `timeout` rejects with a
 // 'grind timed out' error; either way the worker is always terminated.
 function mineHeader(header, difficulty, { signal, timeout = DEFAULT_GRIND_TIMEOUT } = {}) {

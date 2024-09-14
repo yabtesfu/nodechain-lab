@@ -167,7 +167,7 @@ class Miner {
         timeout: this.grindTimeout
       });
     } catch (err) {
-      // Aborted (stale head), timed out, or a worker error — abandon this
+      // Aborted (stale head), timed out, or a worker error - abandon this
       // candidate. grinding is cleared so the next tick mines a fresh one.
       this.grinding = false;
       if (err.message === 'grind timed out') {

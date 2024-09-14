@@ -46,7 +46,7 @@ export default function App() {
         // burst of events can never render an out-of-order (stale) snapshot.
         if (id === reqId.current) {
           setOverview(o);
-          setError(''); // recovered — clear any stale error banner
+          setError(''); // recovered - clear any stale error banner
         }
       })
       .catch((e) => {
@@ -88,7 +88,7 @@ export default function App() {
   };
 
   const onCreateWallet = () => {
-    // Generated entirely in the browser — the private key never touches the node.
+    // Generated entirely in the browser - the private key never touches the node.
     const w = createWallet();
     setWallet(w);
     localStorage.setItem(WALLET_KEY, JSON.stringify(w));
@@ -171,7 +171,7 @@ export default function App() {
 
           <Panel title="Balances">
             {Object.keys(overview.balances).length === 0 ? (
-              <Empty>No balances yet — mine a block</Empty>
+              <Empty>No balances yet - mine a block</Empty>
             ) : (
               <ul className="balances">
                 {Object.entries(overview.balances)
@@ -188,7 +188,7 @@ export default function App() {
 
           <Panel title="Peers" subtitle={`${overview.peers} connected`}>
             {overview.connectedPeers.length === 0 ? (
-              <Empty>Solo node — no peers</Empty>
+              <Empty>Solo node - no peers</Empty>
             ) : (
               <ul className="peers">
                 {overview.connectedPeers.map((p) => (
@@ -251,7 +251,7 @@ function BlockCard({ block, flash }) {
         <div className="block-meta">
           <span>{txCount} tx</span>
           <span>diff {block.difficulty}</span>
-          <span>miner {short(block.miner, 8) || '—'}</span>
+          <span>miner {short(block.miner, 8) || '-'}</span>
           <span>{timeAgo(block.timestamp)}</span>
         </div>
       </div>
@@ -267,7 +267,7 @@ function WalletPanel({ wallet, onCreate }) {
           <label>Address</label>
           <code className="pill">{wallet.address}</code>
           <p className="ok-note">
-            🔒 Private key stays in your browser — transactions are signed here and
+            🔒 Private key stays in your browser - transactions are signed here and
             the key is never sent to the node.
           </p>
           <button className="ghost" onClick={onCreate}>
